@@ -1,0 +1,69 @@
+name: Publish Latest APK Snapshot
+
+on:
+  schedule:
+    - cron: '0 4 * * *'  # Runs daily at 4 AM UTC
+  workflow_dispatch: {}    # Allows you to run this workflow manually
+
+jobs:
+  update-chrome:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+      releases: write 
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download LAST_CHANGE and get version
+        id: get_version
+        run: |
+          curl -Lfso LAST_CHANGE "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64%2FLAST_CHANGE?alt=media"
+          VERSION=$(cat LAST_CHANGE)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version_tag=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if release already exists
+        id: check_release
+        run: |
+          if gh release view ${{ steps.get_version.outputs.version_tag }}; then
+            echo "Release ${{ steps.get_version.outputs.version_tag }} already exists. Stopping workflow."
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release ${{ steps.get_version.outputs.version_tag }} does not exist. Proceeding."
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Snapshot Zip
+        if: steps.check_release.outputs.exists == 'false'
+        run: |
+          SNAPSHOT_URL="https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/AndroidDesktop_arm64%2F${{ env.VERSION }}%2Fchrome-android-desktop.zip?alt=media"
+          echo "Downloading $SNAPSHOT_URL"
+          curl -Lfso chrome-android-desktop.zip "$SNAPSHOT_URL"
+
+      # --- MODIFIED STEP ---
+      - name: Unzip APK
+        if: steps.check_release.outputs.exists == 'false'
+        run: |
+          # Use unzip to extract only the specific file we need
+          # The -j flag junks the path, dropping the directories and saving just the file
+          unzip -j chrome-android-desktop.zip "chrome-android-desktop/apks/ChromePublic.apk"
+          
+          # Now we know the exact filename
+          echo "APK_FILE=ChromePublic.apk" >> $GITHUB_ENV
+
+      # --- MODIFIED STEP ---
+      - name: Create Release and Upload APK
+        if: steps.check_release.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "${{ env.VERSION }}"
+          name: "Chromium Android Desktop Snapshot ${{ env.VERSION }}"
+          # Use the exact filename
+          files: "ChromePublic.apk"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
